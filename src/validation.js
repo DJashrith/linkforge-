@@ -11,7 +11,7 @@ const ALIAS_PATTERN = /^[A-Za-z0-9_-]+$/;
 // Paths that are (or will be) real routes, so they can't be claimed as aliases.
 const RESERVED_ALIASES = new Set([
   'shorten', 'health', 'api', 'admin', 'login', 'logout', 'signup', 'register',
-  'dashboard', 'settings', 'static', 'assets', 'docs',
+  'dashboard', 'settings', 'static', 'assets', 'docs', 'urls', 'stats',
 ]);
 
 const PRIVATE_NETWORKS = new BlockList();
@@ -87,6 +87,20 @@ export function validateAlias(input) {
     return { error: `"${input}" is reserved, pick another alias` };
   }
   return { alias: input };
+}
+
+/**
+ * expires_at from a request body: an ISO 8601 timestamp, or null for "never".
+ * Past dates are allowed on purpose, that's how you expire a link right now.
+ * @returns {{ expiresAt: Date | null } | { error: string }}
+ */
+export function validateExpiresAt(input) {
+  if (input === null) return { expiresAt: null };
+  // Date.parse accepts things like "3", so require at least YYYY-MM-DD
+  if (typeof input !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(input) || Number.isNaN(Date.parse(input))) {
+    return { error: 'expires_at must be an ISO 8601 date like 2026-12-31T23:59:59Z, or null' };
+  }
+  return { expiresAt: new Date(input) };
 }
 
 function isLocalHost(host) {

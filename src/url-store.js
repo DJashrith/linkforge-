@@ -4,6 +4,7 @@ import { encode } from './base62.js';
 // How many ids we'll burn looking for a generated code that isn't taken by an alias.
 const MAX_CODE_ATTEMPTS = 10;
 const COLUMNS = 'short_code, long_url, created_at, expires_at';
+const DETAIL_COLUMNS = `${COLUMNS}, is_custom, click_count`;
 const NOT_EXPIRED = '(expires_at IS NULL OR expires_at > now())';
 
 /** Existing live generated link for this URL, so resubmitting doesn't create duplicates. */
@@ -61,19 +62,86 @@ export async function createWithAlias(longUrl, alias) {
   return null;
 }
 
-/**
- * Looks up a code for redirecting and counts the click in the same query.
- * @returns {{ status: 'found', longUrl: string } | { status: 'expired' } | { status: 'missing' }}
- */
-export async function resolve(shortCode) {
-  const { rows: [hit] } = await pool.query(
-    `UPDATE urls SET click_count = click_count + 1
-     WHERE short_code = $1 AND ${NOT_EXPIRED}
-     RETURNING long_url`,
+/** Everything the redirect needs (expired links included, the caller decides). */
+export async function findByCode(shortCode) {
+  const { rows } = await pool.query(
+    'SELECT short_code, long_url, expires_at FROM urls WHERE short_code = $1',
     [shortCode],
   );
-  if (hit) return { status: 'found', longUrl: hit.long_url };
+  return rows[0] ?? null;
+}
 
-  const { rowCount } = await pool.query('SELECT 1 FROM urls WHERE short_code = $1', [shortCode]);
-  return { status: rowCount ? 'expired' : 'missing' };
+export async function getDetails(shortCode) {
+  const { rows } = await pool.query(
+    `SELECT ${DETAIL_COLUMNS} FROM urls WHERE short_code = $1`,
+    [shortCode],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * @param {{ longUrl?: string, expiresAt?: Date | null }} changes only the keys present are updated
+ */
+export async function update(shortCode, changes) {
+  const sets = [];
+  const values = [shortCode];
+  if ('longUrl' in changes) {
+    values.push(changes.longUrl);
+    sets.push(`long_url = $${values.length}`);
+  }
+  if ('expiresAt' in changes) {
+    values.push(changes.expiresAt);
+    sets.push(`expires_at = $${values.length}`);
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE urls SET ${sets.join(', ')} WHERE short_code = $1 RETURNING ${DETAIL_COLUMNS}`,
+    values,
+  );
+  return rows[0] ?? null;
+}
+
+/** @returns {Promise<boolean>} whether anything was deleted */
+export async function remove(shortCode) {
+  const { rowCount } = await pool.query('DELETE FROM urls WHERE short_code = $1', [shortCode]);
+  return rowCount > 0;
+}
+
+export async function getStats(shortCode, { days = 30, top = 10 } = {}) {
+  const { rows: [link] } = await pool.query(
+    'SELECT id, click_count FROM urls WHERE short_code = $1',
+    [shortCode],
+  );
+  if (!link) return null;
+
+  const [byDay, countries, referrers] = await Promise.all([
+    pool.query(
+      `SELECT to_char(date_trunc('day', clicked_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+              count(*)::int AS clicks
+       FROM click_events
+       WHERE url_id = $1 AND clicked_at > now() - make_interval(days => $2)
+       GROUP BY 1 ORDER BY 1`,
+      [link.id, days],
+    ),
+    pool.query(
+      `SELECT coalesce(country, '??') COLLATE "C" AS country, count(*)::int AS clicks
+       FROM click_events WHERE url_id = $1
+       GROUP BY 1 ORDER BY clicks DESC, country LIMIT $2`,
+      [link.id, top],
+    ),
+    pool.query(
+      `SELECT coalesce(substring(referrer FROM '^[a-zA-Z]+://([^/:?#]+)'), 'direct') COLLATE "C" AS referrer,
+              count(*)::int AS clicks
+       FROM click_events WHERE url_id = $1
+       GROUP BY 1 ORDER BY clicks DESC, referrer LIMIT $2`,
+      [link.id, top],
+    ),
+  ]);
+
+  return {
+    total_clicks: Number(link.click_count),
+    clicks_by_day: byDay.rows,
+    top_countries: countries.rows,
+    top_referrers: referrers.rows,
+  };
 }

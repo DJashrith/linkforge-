@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { BASE_URL, BLOCKED_DOMAINS } from '../config.js';
 import { validateLongUrl, validateAlias, SHORT_CODE_PATTERN } from '../validation.js';
-import * as store from '../url-store.js';
+import * as links from '../links.js';
 
-const urlOptions = { ownHost: new URL(BASE_URL).host, blockedDomains: BLOCKED_DOMAINS };
+export const urlOptions = { ownHost: new URL(BASE_URL).host, blockedDomains: BLOCKED_DOMAINS };
 
 export const urlsRouter = Router();
 
@@ -18,15 +18,15 @@ urlsRouter.post('/shorten', async (req, res) => {
     const aliasCheck = validateAlias(rawAlias);
     if (aliasCheck.error) return res.status(400).json({ error: aliasCheck.error });
 
-    const result = await store.createWithAlias(longUrl, aliasCheck.alias);
+    const result = await links.createWithAlias(longUrl, aliasCheck.alias);
     if (!result) return res.status(409).json({ error: `alias "${aliasCheck.alias}" is already taken` });
     return res.status(result.created ? 201 : 200).json(toResponse(result.row));
   }
 
-  const existing = await store.findReusable(longUrl);
+  const existing = await links.findReusable(longUrl);
   if (existing) return res.status(200).json(toResponse(existing));
 
-  const row = await store.createWithGeneratedCode(longUrl);
+  const row = await links.createWithGeneratedCode(longUrl);
   res.status(201).json(toResponse(row));
 });
 
@@ -37,13 +37,13 @@ urlsRouter.get('/:shortCode', async (req, res) => {
     return res.status(404).json({ error: 'short link not found' });
   }
 
-  const result = await store.resolve(shortCode);
+  const result = await links.resolve(shortCode);
   if (result.status === 'found') return res.redirect(302, result.longUrl);
   if (result.status === 'expired') return res.status(410).json({ error: 'this link has expired' });
   res.status(404).json({ error: 'short link not found' });
 });
 
-function toResponse(row) {
+export function toResponse(row) {
   return {
     short_code: row.short_code,
     short_url: `${BASE_URL}/${row.short_code}`,

@@ -1,11 +1,15 @@
 import express from 'express';
+import { TRUST_PROXY } from './config.js';
+import { adminRouter } from './routes/admin.js';
 import { urlsRouter } from './routes/urls.js';
 
 export const app = express();
 
+app.set('trust proxy', TRUST_PROXY);
 app.use(express.json({ limit: '10kb' }));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.use(adminRouter);
 app.use(urlsRouter);
 
 app.use((req, res) => res.status(404).json({ error: 'not found' }));

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateLongUrl, validateAlias, SHORT_CODE_PATTERN } from '../src/validation.js';
+import { validateLongUrl, validateAlias, validateExpiresAt, SHORT_CODE_PATTERN } from '../src/validation.js';
 
 const ok = (input, opts) => validateLongUrl(input, opts).url;
 const err = (input, opts) => validateLongUrl(input, opts).error;
@@ -99,4 +99,17 @@ test('validateAlias rejects bad aliases', () => {
 test('SHORT_CODE_PATTERN matches codes and aliases but not junk', () => {
   for (const c of ['1', 'aZl8N0y58M7', 'my-link']) assert.ok(SHORT_CODE_PATTERN.test(c), c);
   for (const c of ['', 'favicon.ico', 'a/b', 'x'.repeat(17)]) assert.ok(!SHORT_CODE_PATTERN.test(c), c);
+});
+
+test('validateExpiresAt accepts ISO dates and null', () => {
+  assert.equal(validateExpiresAt(null).expiresAt, null);
+  assert.equal(validateExpiresAt('2026-12-31T23:59:59Z').expiresAt.toISOString(), '2026-12-31T23:59:59.000Z');
+  assert.equal(validateExpiresAt('2026-12-31').expiresAt.toISOString(), '2026-12-31T00:00:00.000Z');
+  assert.ok(validateExpiresAt('2020-01-01T00:00:00Z').expiresAt); // past is fine, expires it now
+});
+
+test('validateExpiresAt rejects junk', () => {
+  for (const v of ['tomorrow', '3', 3, '', '2026-13-45', undefined, {}]) {
+    assert.match(validateExpiresAt(v).error, /ISO 8601/, String(v));
+  }
 });
