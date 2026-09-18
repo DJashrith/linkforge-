@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { BASE_URL, BLOCKED_DOMAINS } from '../config.js';
 import { validateLongUrl, validateAlias, SHORT_CODE_PATTERN } from '../validation.js';
 import * as links from '../links.js';
+import { trackClick } from '../clicks/queue.js';
 
 export const urlOptions = { ownHost: new URL(BASE_URL).host, blockedDomains: BLOCKED_DOMAINS };
 
@@ -38,7 +39,13 @@ urlsRouter.get('/:shortCode', async (req, res) => {
   }
 
   const result = await links.resolve(shortCode);
-  if (result.status === 'found') return res.redirect(302, result.longUrl);
+  if (result.status === 'found') {
+    res.redirect(302, result.longUrl);
+    // After the response, and not awaited. HEAD is skipped so link-preview
+    // bots checking the target don't count as visits.
+    if (req.method === 'GET') trackClick(shortCode, req);
+    return;
+  }
   if (result.status === 'expired') return res.status(410).json({ error: 'this link has expired' });
   res.status(404).json({ error: 'short link not found' });
 });
