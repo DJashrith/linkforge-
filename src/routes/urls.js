@@ -1,50 +1,54 @@
 import { Router } from 'express';
-import { pool } from '../db.js';
-import { encode } from '../base62.js';
+import { BASE_URL, BLOCKED_DOMAINS } from '../config.js';
+import { validateLongUrl, validateAlias, SHORT_CODE_PATTERN } from '../validation.js';
+import * as store from '../url-store.js';
 
-const MAX_URL_LENGTH = 2048;
-const BASE_URL = process.env.BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+const urlOptions = { ownHost: new URL(BASE_URL).host, blockedDomains: BLOCKED_DOMAINS };
 
 export const urlsRouter = Router();
 
-// POST /shorten  { "url": "https://example.com/some/long/path" }
+// POST /shorten  { "url": "https://example.com/long", "alias": "optional-name" }
 urlsRouter.post('/shorten', async (req, res) => {
-  const longUrl = normalizeUrl(req.body?.url);
-  if (!longUrl) {
-    return res.status(400).json({ error: 'body must include "url": an absolute http(s) URL' });
+  const checked = validateLongUrl(req.body?.url, urlOptions);
+  if (checked.error) return res.status(400).json({ error: checked.error });
+  const longUrl = checked.url;
+
+  const rawAlias = req.body?.alias;
+  if (rawAlias !== undefined && rawAlias !== null && rawAlias !== '') {
+    const aliasCheck = validateAlias(rawAlias);
+    if (aliasCheck.error) return res.status(400).json({ error: aliasCheck.error });
+
+    const result = await store.createWithAlias(longUrl, aliasCheck.alias);
+    if (!result) return res.status(409).json({ error: `alias "${aliasCheck.alias}" is already taken` });
+    return res.status(result.created ? 201 : 200).json(toResponse(result.row));
   }
 
-  // Reserve the ID first so the short code can be written in the same INSERT,
-  // letting short_code stay NOT NULL instead of insert-then-update.
-  const { rows: [{ id }] } = await pool.query(
-    `SELECT nextval(pg_get_serial_sequence('urls', 'id')) AS id`,
-  );
-  const shortCode = encode(id);
+  const existing = await store.findReusable(longUrl);
+  if (existing) return res.status(200).json(toResponse(existing));
 
-  const { rows: [row] } = await pool.query(
-    `INSERT INTO urls (id, short_code, long_url)
-     VALUES ($1, $2, $3)
-     RETURNING short_code, long_url, created_at, expires_at`,
-    [id, shortCode, longUrl],
-  );
+  const row = await store.createWithGeneratedCode(longUrl);
+  res.status(201).json(toResponse(row));
+});
 
-  res.status(201).json({
+// GET /:shortCode  ->  302 to the original URL
+urlsRouter.get('/:shortCode', async (req, res) => {
+  const { shortCode } = req.params;
+  if (!SHORT_CODE_PATTERN.test(shortCode)) {
+    return res.status(404).json({ error: 'short link not found' });
+  }
+
+  const result = await store.resolve(shortCode);
+  if (result.status === 'found') return res.redirect(302, result.longUrl);
+  if (result.status === 'expired') return res.status(410).json({ error: 'this link has expired' });
+  res.status(404).json({ error: 'short link not found' });
+});
+
+function toResponse(row) {
+  return {
     short_code: row.short_code,
     short_url: `${BASE_URL}/${row.short_code}`,
     long_url: row.long_url,
     created_at: row.created_at,
     expires_at: row.expires_at,
-  });
-});
-
-function normalizeUrl(input) {
-  if (typeof input !== 'string' || input.length > MAX_URL_LENGTH) return null;
-  let url;
-  try {
-    url = new URL(input.trim());
-  } catch {
-    return null;
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  return url.href;
+  };
 }
