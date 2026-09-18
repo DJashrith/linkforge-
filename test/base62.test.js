@@ -33,6 +33,24 @@ test('round-trips encode -> decode', () => {
   }
 });
 
+test('code length only grows at powers of 62', () => {
+  assert.equal(encode(61).length, 1);
+  assert.equal(encode(62).length, 2);
+  assert.equal(encode(62n ** 5n - 1n).length, 5);
+  assert.equal(encode(62n ** 5n).length, 6);
+});
+
+test('different ids never share a code', () => {
+  const seen = new Set();
+  for (let i = 0; i < 20_000; i++) seen.add(encode(i));
+  assert.equal(seen.size, 20_000);
+});
+
+test('generated codes never start with 0 (except id 0)', () => {
+  // matters because "0abc" and "abc" decode to the same id
+  for (let i = 1; i < 5_000; i++) assert.notEqual(encode(i)[0], '0');
+});
+
 test('rejects invalid input', () => {
   assert.throws(() => encode(-1), RangeError);
   assert.throws(() => encode(1.5), RangeError);
